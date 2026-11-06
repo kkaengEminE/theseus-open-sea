@@ -1,0 +1,23 @@
+(function(root){
+const TYPES=['선체','갑판','돛대','돛','방향타','노'];const PORT={x:16,y:2};const W=18,H=12;
+const land=new Set(['5,3','6,3','5,4','6,4','12,8','13,8','13,9','9,1']);
+const blocked=(x,y)=>x<0||x>=W||y<0||y>=H||land.has(x+','+y);
+const dist=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
+function log(s,text){s.logs.unshift({day:s.moves,text});s.logs=s.logs.slice(0,80)}
+function item(s,type,origin=false){return {id:origin?'O'+type:'N'+s.serial++,type,origin,hp:100,generation:origin?0:1}}
+function spawn(s){let type=s.spawnIndex++%6;let x,y;do{x=Math.floor(Math.random()*W);y=Math.floor(Math.random()*H)}while(blocked(x,y)||dist({x,y},PORT)<2||s.crates.some(c=>c.x===x&&c.y===y)||(x===s.x&&y===s.y));s.crates.push({x,y,type,id:'C'+s.serial++})}
+function fresh(){let s={v:1,x:2,y:9,moves:0,serial:1,spawnIndex:0,ship:[],cargo:[],warehouse:[],crates:[],logs:[],repairs:0,perType:[0,0,0,0,0,0],path:[],phase:'sea',verdicts:[],rebuilt:null};s.ship=TYPES.map((_,i)=>item(s,i,true));s.ship[0].hp=32;[[3,9,0],[4,8,1],[7,7,2],[8,5,3],[11,5,4],[14,3,5],[2,5,3],[10,10,0],[15,7,1],[7,2,4],[4,11,2],[16,10,5]].forEach(([x,y,type])=>s.crates.push({x,y,type,id:'C'+s.serial++}));log(s,'출항. 가까운 선체 부품부터 건져 보자. 귀항 시점은 내가 정한다.');return s}
+function route(s,x,y){if(blocked(x,y))return [];let q=[[s.x,s.y,[]]],seen=new Set([s.x+','+s.y]);while(q.length){let [a,b,p]=q.shift();if(a===x&&b===y)return p;for(let [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){let nx=a+dx,ny=b+dy,k=nx+','+ny;if(!blocked(nx,ny)&&!seen.has(k)){seen.add(k);q.push([nx,ny,[...p,{x:nx,y:ny}]])}}}return []}
+function move(s,dx,dy){if(s.phase!=='sea'||Math.abs(dx)+Math.abs(dy)!==1||blocked(s.x+dx,s.y+dy))return false;s.path.push({x:s.x,y:s.y});if(s.path.length>180)s.path.shift();s.x+=dx;s.y+=dy;s.moves++;const storm=s.x>=9&&s.x<=12&&s.y>=3&&s.y<=6;let warned=false;s.ship.forEach((p,i)=>{const before=p.hp;p.hp=Math.max(0,p.hp-(storm?4:1)-(s.moves%7===i?2:0));if(before>30&&p.hp<=30){log(s,TYPES[i]+' 손상! 인양한 부품으로 교체할 수 있다.');warned=true}if(before>0&&p.hp===0){log(s,TYPES[i]+' 파손. 임시 결속으로 천천히 항해 중. 교체가 필요하다.');warned=true}});if(s.moves%12===0&&s.crates.length<18)spawn(s);return {warned,storm}}
+function nearby(s){return s.crates.filter(c=>dist(c,s)<=1)}
+function salvage(s){if(s.phase!=='sea')return 0;const found=nearby(s);found.forEach(c=>{const p=item(s,c.type);s.cargo.push(p);s.crates=s.crates.filter(a=>a.id!==c.id);log(s,TYPES[c.type]+' 인양 → 새 부품 화물칸.');spawn(s)});return found.length}
+function repair(s,type){if(s.phase!=='sea')return false;const idx=s.cargo.findIndex(p=>p.type===type);if(idx<0)return false;let old=s.ship[type],p=s.cargo.splice(idx,1)[0];s.warehouse.push({...old,removedAt:s.moves});p.generation=old.generation+1;s.ship[type]=p;s.repairs++;s.perType[type]++;log(s,TYPES[type]+' '+s.perType[type]+'번째 교체. '+(old.origin?'출항 당시 원본':'이전에 인양한 부품')+'을 보존 창고에 보관했다.');return true}
+function originals(parts){return parts.filter(p=>p&&p.origin).length}
+function dock(s){if(s.phase!=='sea'||dist(s,PORT)>1)return false;s.phase='first';s.verdicts=[];log(s,'아테네 도착. 항해한 배의 첫 번째 심사를 시작한다.');return true}
+function vote(s,v){if(!['yes','no','unsure'].includes(v))return false;if(s.phase==='first'){s.verdicts[0]=v;s.phase='build';return true}if(s.phase==='second'){s.verdicts[1]=v;s.phase='end';return true}return false}
+function buildPlan(s){return TYPES.map((_,i)=>s.warehouse.find(p=>p.type===i&&p.origin)||s.warehouse.find(p=>p.type===i)||null)}
+function rebuild(s){if(s.phase!=='build')return false;const plan=buildPlan(s);s.rebuilt=plan.map((p,i)=>p?{...p,hp:100}:({...item(s,i),replica:true}));const used=new Set(plan.filter(Boolean).map(p=>p.id));s.warehouse=s.warehouse.filter(p=>!used.has(p.id));s.phase='second';log(s,'보관 부품으로 두 번째 배를 조립했다. 없는 종류는 항구의 복제품으로 채웠다.');return true}
+function resume(s){if(s.rebuilt){s.warehouse.push(...s.rebuilt.filter(p=>!p.replica));s.rebuilt=null} s.phase='sea';s.verdicts=[];log(s,'재조립 배는 해체해 다시 보관하고, 항해하던 배로 출항했다.')}
+function jury(parts,continuous){const n=originals(parts);return [{name:'물질의 심사관',rule:'출항 때의 원본 6개가 모두 있어야 같은 배',yes:n===6,text:n===6?'원본이 모두 모였다. 같은 배로 인정한다.':`원본은 ${n}/6개. 엄격한 물질 기준으로는 다른 배다.`},{name:'역사의 심사관',rule:'수리하며 이어진 항해의 연속성을 기준으로 판단',yes:continuous,text:continuous?'수리해도 항해는 끊기지 않았다. 같은 배다.':'항구에서 새로 조립된 개체다. 옛 항해를 이어 온 배는 아니다.'},{name:'형태의 심사관',rule:'여섯 부위의 설계와 배의 기능이 이어지는가',yes:true,text:'같은 설계로 여섯 부위가 갖춰져 있다. 이 기준에서는 같은 배다.'}]}
+const api={TYPES,PORT,W,H,land,blocked,dist,fresh,route,move,nearby,salvage,repair,originals,dock,vote,buildPlan,rebuild,resume,jury};if(typeof module!=='undefined')module.exports=api;else root.Sea=api;
+})(typeof window!=='undefined'?window:this);
